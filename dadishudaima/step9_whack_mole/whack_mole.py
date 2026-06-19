@@ -229,23 +229,28 @@ class WhackMole:
         # 如果TARGET_Z_MM>0，则用此值覆盖Zbase
         if TARGET_Z_MM > 0:
             Zbase = TARGET_Z_MM / 1000.0
+            Zbase_stay = Zbase+0.03
             print(f"  Z值已覆盖: {Zbase*1000:.1f}mm (原计算值被忽略)")
         else:
             print(f"  补偿之前目标位置: ({Xbase*1000:.1f}, {Ybase*1000:.1f}, {Zbase*1000:.1f})mm")
 
         # FK_OFFSET补偿
         target = np.array([Xbase, Ybase, Zbase]) - FK_OFFSET
+        target_stay = np.array([Xbase, Ybase, Zbase_stay]) - FK_OFFSET
         print(f"  补偿之后目标位置: ({target[0]*1000:.1f}, {target[1]*1000:.1f}, {target[2]*1000:.1f})mm")
         # print(f"  目标位置: ({target[0]*1000:.1f}, {target[1]*1000:.1f}, {target[2]*1000:.1f})mm")
 
         # IK求解（使用IK初始角度）
         joint_pos = self.ik_init_joints.copy()
         desired_pose = np.eye(4)
+        desired_pose_stay = np.eye(4)
         desired_pose[:3, :3] = FIXED_ROTATION
         desired_pose[:3, 3] = target
+        desired_pose_stay[:3, :3] = FIXED_ROTATION
+        desired_pose_stay[:3, 3] = target_stay
 
         result_joints = self.kin.inverse_kinematics(joint_pos, desired_pose)
-
+        result_joints_stay = self.kin.inverse_kinematics(joint_pos, desired_pose_stay)
         if result_joints is None:
             print(f"  IK求解失败")
             return False
@@ -258,8 +263,13 @@ class WhackMole:
             for j, a in zip(self.home_data["joint_names"], result_joints)
         })
         print("等待1s")
-        time.sleep(1.0)  # 等待点击稳定
-        
+        time.sleep(0.5)  # 等待点击稳定
+        self.robot.send_action({
+            f"{j}.pos": float(a)
+            for j, a in zip(self.home_data["joint_names"], result_joints_stay)
+        })
+        print("等待1s")
+        time.sleep(0.5)  # 等待点击稳定
         # 回到初始位置
         self.move_to_home()
 
