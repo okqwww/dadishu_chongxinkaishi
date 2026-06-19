@@ -1,0 +1,16 @@
+{
+  "joint_names": [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll"
+  ],
+  "joint_positions": [
+    -6.5054945054945055,
+    -3.78021978021978,
+    48.35164835164835,
+    54.065934065934066,
+    19.736263736263737
+  ]
+}
