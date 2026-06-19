@@ -9,6 +9,12 @@ import numpy as np
 import json
 import time
 
+import sys
+import numpy as np
+import json
+import time
+import queue
+import threading
 sys.path.insert(0, "/home/zyj/dadishu_chongxinkaishi/lerobot/src")
 sys.path.insert(0, "/home/zyj/dadishu_chongxinkaishi/dadishudaima/step7_pixel_to_base")
 sys.path.insert(0, "/home/zyj/dadishu_chongxinkaishi/dadishudaima/step8_mole_detection")
@@ -55,6 +61,10 @@ FIXED_ROTATION = np.eye(3)
 # 目标Z值（毫米）- 用read_z.py脚本读取后填入
 # 如果填了非0值，则使用此值覆盖计算出的Zbase
 TARGET_Z_MM = 18.85
+
+TASK_QUEUE = queue.Queue(maxsize=1)
+EXIT_FLAG = threading.Event()
+COOL_DOWN_SEC = 0.0
 
 
 class WhackMole:
@@ -243,16 +253,35 @@ class WhackMole:
         print(f"  IK求解成功: {result_joints.round(2).tolist()}")
 
         # 移动到目标
-        # self.robot.send_action({
-        #     f"{j}.pos": float(a)
-        #     for j, a in zip(self.home_data["joint_names"], result_joints)
-        # })
-        # time.sleep(1.0)  # 等待点击稳定
-
-        # # 回到初始位置
-        # self.move_to_home()
+        self.robot.send_action({
+            f"{j}.pos": float(a)
+            for j, a in zip(self.home_data["joint_names"], result_joints)
+        })
+        print("等待1s")
+        time.sleep(1.0)  # 等待点击稳定
+        
+        # 回到初始位置
+        self.move_to_home()
 
         return True
+        
+    def _arm_worker(self):
+            """机械臂工作子线程：执行击打+冷却，不占用视觉主线程"""
+            print("🤖 机械臂工作线程已启动")
+            while not EXIT_FLAG.is_set():
+                try:
+                    # 等待待击打坐标，超时0.2s防止卡死
+                    u, v = TASK_QUEUE.get(timeout=0.2)
+                    print(f"\n[子线程] 执行击打，像素=({u},{v})")
+                    self.whack_one(u, v)
+                    print(f"[子线程] 击打完成，进入{COOL_DOWN_SEC}秒冷却...")
+                    # 冷却延时放在子线程，主线程正常跑视觉
+                    time.sleep(COOL_DOWN_SEC)
+                    print(f"[子线程] 冷却结束，等待新目标")
+                except queue.Empty:
+                    continue
+            print("🤖 机械臂工作线程退出")
+
 
     def run(self):
         print("=" * 60)
@@ -266,9 +295,12 @@ class WhackMole:
 
         cv2.namedWindow("Whack Mole", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Whack Mole", 960, 540)
-
+        # 启动机械臂子线程
+        worker_thread = threading.Thread(target=self._arm_worker, daemon=True)
+        worker_thread.start()
         try:
             while True:
+                print("进入循环")
                 ret, frame = self.cap.read()
                 if not ret:
                     continue
@@ -280,7 +312,15 @@ class WhackMole:
 
                 # 地鼠检测
                 mole_centers = self.mole_detector.detect(frame)
-
+                # ========== 核心队列逻辑：每帧必清空旧任务 ==========
+                # 1. 强制清空队列所有过期坐标
+                while not TASK_QUEUE.empty():
+                    TASK_QUEUE.get()
+                # 2. 当前帧有效才放入最新地鼠
+                if mole_centers and T_tray_to_cam is not None:
+                    uv = mole_centers[0]
+                    TASK_QUEUE.put(uv)
+                # ==================================================
                 # 绘制
                 vis = frame.copy()
 
@@ -330,14 +370,17 @@ class WhackMole:
                     print("\n已回到初始位置")
 
                 # 检测到地鼠时自动点击
-                if mole_centers and T_tray_to_cam is not None:
-                    u, v = mole_centers[0]  # 取第一个
-                    print(f"\n检测到地鼠: 像素=({u},{v})")
-                    self.whack_one(u, v)
-                    # 等待一下避免重复点击
-                    time.sleep(5.0)
+                # if mole_centers and T_tray_to_cam is not None:
+                #     u, v = mole_centers[0]  # 取第一个
+                #     print(f"\n检测到地鼠: 像素=({u},{v})")
+                #     self.whack_one(u, v)
+                #     # 等待一下避免重复点击
+                #     print("等待5s")
+                #     time.sleep(5.0)
+                #     print("5s等待完成")
 
         finally:
+            EXIT_FLAG.set()
             self.cap.release()
             cv2.destroyAllWindows()
             self.robot.disconnect()
